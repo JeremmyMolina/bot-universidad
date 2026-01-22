@@ -1,4 +1,5 @@
 import telebot
+from telebot import apihelper
 import pandas as pd
 import numpy as np
 import os
@@ -6,75 +7,120 @@ import time
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
-# --- CONFIGURACIÓN ---
-# TU TOKEN REAL
+# --- КОНФИГУРАЦИЯ ---
 TOKEN = '8567781272:AAFwSG8dtzUwoKEyBlAvNPQ0yzL-rRGeU94'
-ИМЯ_ФАЙЛА = 'datos.xlsx'
+DATA_FILE = 'datos.xlsx'
 
-# --- LÓGICA DEL BOT ---
-def cargar_datos_excel(файл):
-    print(f"🔄 Buscando archivo: {файл}...")
-    if not os.path.exists(файл):
-        print(f"❌ ERROR: No encuentro '{файл}' en esta carpeta.")
+# --- НАСТРОЙКА ПРОКСИ (ДЛЯ PYTHONANYWHERE) ---
+# Это критически важно для бесплатных аккаунтов, иначе будет ошибка 503
+apihelper.proxy = {'https': 'http://proxy.server:3128'}
+
+# --- РАБОТА С ДАННЫМИ И ML ---
+
+def load_data(filename):
+    """Чтение и подготовка датасета из Excel."""
+    print(f"🔄 Чтение файла: {filename}...")
+    
+    if not os.path.exists(filename):
+        print(f"❌ ОШИБКА: Файл '{filename}' не найден в директории проекта.")
         return None
+
     try:
-        все_листы = pd.read_excel(файл, sheet_name=None)
+        # Читаем все листы сразу
+        all_sheets = pd.read_excel(filename, sheet_name=None)
         dfs = []
-        for nombre, df in все_листы.items():
+        
+        for name, df in all_sheets.items():
+            # Убираем пробелы в названиях колонок
             df.columns = df.columns.str.strip()
+            
+            # Проверка структуры листа
             if 'Вопросы' in df.columns and 'Ответы' in df.columns:
                 dfs.append(df)
-        if not dfs: return None
+        
+        if not dfs:
+            return None
+            
+        # Объединяем данные и удаляем пустые строки
         full_data = pd.concat(dfs, ignore_index=True).dropna(subset=['Вопросы', 'Ответы'])
-        print(f"✅ Datos cargados: {len(full_data)} preguntas.")
+        print(f"✅ База знаний загружена. Всего записей: {len(full_data)}.")
         return full_data
+
     except Exception as e:
-        print(f"❌ Error: {e}")
+        print(f"❌ Критическая ошибка при чтении: {e}")
         return None
 
-class ChatbotAI:
-    def __init__(self, datos):
-        self.preguntas = datos['Вопросы'].tolist()
-        self.respuestas = datos['Ответы'].tolist()
-        print("🧠 Entrenando cerebro...")
+class FAQBotModel:
+    """Класс для обработки запросов на основе TF-IDF."""
+    def __init__(self, data):
+        self.questions = data['Вопросы'].tolist()
+        self.answers = data['Ответы'].tolist()
+        
+        print("⚙️ Векторизация данных и обучение модели...")
         self.vectorizer = TfidfVectorizer()
-        self.matriz = self.vectorizer.fit_transform(self.preguntas)
+        self.matrix = self.vectorizer.fit_transform(self.questions)
 
-    def responder(self, texto):
-        vec = self.vectorizer.transform([texto])
-        similitud = cosine_similarity(vec, self.matriz)
-        idx = np.argmax(similitud)
-        score = similitud[0][idx]
+    def get_response(self, text):
+        # Преобразуем запрос пользователя в вектор
+        vec = self.vectorizer.transform([text])
+        
+        # Считаем косинусное сходство
+        similarities = cosine_similarity(vec, self.matrix)
+        idx = np.argmax(similarities)
+        score = similarities[0][idx]
+        
+        # Фильтр по порогу уверенности (защита от ложных срабатываний)
         if score < 0.2:
-            return "Извините, я не нашел информации по этому вопросу.", score
-        return self.respuestas[idx], score
+            return "Извините, я не нашел информации по этому вопросу в базе знаний.", score
+            
+        return self.answers[idx], score
 
-# --- ARRANQUE ---
-datos = cargar_datos_excel(ИМЯ_ФАЙЛА)
-if datos is not None:
-    bot_cerebro = ChatbotAI(datos)
+# --- ЗАПУСК БОТА ---
+
+dataset = load_data(DATA_FILE)
+
+if dataset is not None:
+    # Инициализация модели
+    model = FAQBotModel(dataset)
+    # Инициализация API Telegram
     bot = telebot.TeleBot(TOKEN)
-    print("🚀 EL BOT ESTÁ VIVO EN TU PC. (No cierres esta ventana)")
+    
+    print("🚀 Сервер запущен. Ожидание сообщений...")
 
+    # Обработчик команды /start
     @bot.message_handler(commands=['start'])
-    def welcome(message):
-        bot.reply_to(message, "¡Hola! Soy el asistente virtual. Pregúntame algo.")
-
-    @bot.message_handler(func=lambda m: True)
-    def chat(message):
+    def send_welcome(message):
+        welcome_text = (
+            "Здравствуйте! Я виртуальный помощник учебной программы. 🎓\n"
+            "Вы можете задать мне вопросы о расписании, оплате или кураторах."
+        )
         try:
-            resp, conf = bot_cerebro.responder(message.text)
-            print(f"📩 Usuario: {message.text} | 🤖 Bot: {resp} ({conf:.2f})")
-            bot.reply_to(message, resp)
+            bot.reply_to(message, welcome_text)
         except Exception as e:
-            print(f"Error: {e}")
+            print(f"⚠️ Ошибка отправки приветствия: {e}")
 
-    # Esto mantiene al bot despierto siempre, incluso si hay fallos de red
+    # Обработчик текстовых сообщений
+    @bot.message_handler(func=lambda m: True)
+    def handle_message(message):
+        try:
+            # Получение ответа от ML-модели
+            response_text, confidence = model.get_response(message.text)
+            
+            # Логирование в консоль (для отладки)
+            print(f"📩 User: {message.text} | 🤖 Bot: {response_text[:30]}... (Score: {confidence:.2f})")
+            
+            bot.reply_to(message, response_text)
+            
+        except Exception as e:
+            print(f"⚠️ Ошибка обработки сообщения: {e}")
+
+    # Бесконечный цикл polling с обработкой ошибок сети
     while True:
         try:
-            bot.polling(none_stop=True)
+            bot.polling(none_stop=True, interval=2) # interval=2 снижает нагрузку на прокси
         except Exception as e:
-            print(f"⚠️ Error de conexión: {e}")
-            time.sleep(5)
+            print(f"⚠️ Потеря соединения с Telegram API: {e}")
+            print("🔄 Переподключение через 10 секунд...")
+            time.sleep(10)
 else:
-    input("❌ Error al cargar datos. Presiona Enter para salir.")
+    input("❌ Ошибка запуска: база данных пуста или не найдена. Нажмите Enter для выхода.")
