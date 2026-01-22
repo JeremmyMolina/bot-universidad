@@ -11,8 +11,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 TOKEN = '8567781272:AAFwSG8dtzUwoKEyBlAvNPQ0yzL-rRGeU94'
 DATA_FILE = 'datos.xlsx'
 
-# --- НАСТРОЙКА ПРОКСИ (ДЛЯ PYTHONANYWHERE) ---
-# Это критически важно для бесплатных аккаунтов, иначе будет ошибка 503
+# --- НАСТРОЙКА ПРОКСИ ---
 apihelper.proxy = {'https': 'http://proxy.server:3128'}
 
 # --- РАБОТА С ДАННЫМИ И ML ---
@@ -124,3 +123,4 @@ if dataset is not None:
             time.sleep(10)
 else:
     input("❌ Ошибка запуска: база данных пуста или не найдена. Нажмите Enter для выхода.")
+
